@@ -1,0 +1,282 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Person {
+  id        String    @id @default(cuid())
+  userId    String?
+  name      String
+  createdAt DateTime  @default(now())
+  user      AuthUser? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts  Account[]
+
+  @@unique([userId, name])
+  @@map("people")
+}
+
+model Bookmaker {
+  id             String    @id @default(cuid())
+  userId         String?
+  name           String
+  isExchange     Boolean   @default(false)
+  commissionRate Decimal?  @db.Decimal(5, 2)
+  createdAt      DateTime  @default(now())
+  user           AuthUser? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts       Account[]
+
+  @@unique([userId, name])
+  @@map("bookmakers")
+}
+
+enum AccountStatus {
+  ACTIVE
+  RESTRICTED
+  GUBBED
+  CLOSED
+}
+
+model Account {
+  id          String        @id @default(cuid())
+  userId      String?
+  personId    String
+  bookmakerId String
+  status      AccountStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+
+  user            AuthUser?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person          Person        @relation(fields: [personId], references: [id])
+  bookmaker       Bookmaker     @relation(fields: [bookmakerId], references: [id])
+  bets            Bet[]         @relation("BetAccount")
+  exchangeForBets Bet[]         @relation("BetExchangeAccount")
+  casinoOffers    CasinoOffer[]
+  transactions    Transaction[]
+
+  @@unique([personId, bookmakerId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model BetType {
+  id        String    @id @default(cuid())
+  userId    String?
+  name      String
+  createdAt DateTime  @default(now())
+  user      AuthUser? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bets      Bet[]
+
+  @@unique([userId, name])
+  @@map("bet_types")
+}
+
+enum BetStatus {
+  SETTLED
+  PENDING
+  VOID
+}
+
+enum BetSource {
+  MANUAL
+  ODDSMONKEY
+}
+
+enum BetOutcome {
+  BOOKMAKER
+  EXCHANGE
+}
+
+model Bet {
+  id                String   @id @default(cuid())
+  userId            String?
+  accountId         String
+  exchangeAccountId String?
+  betTypeId         String
+  event             String
+  eventDate         DateTime
+
+  // Back/lay calculator inputs — only meaningful when exchangeAccountId is set.
+  // Used to derive bookmakerProfit/exchangeProfit once the outcome is known.
+  backStake  Decimal?    @db.Decimal(10, 2)
+  backOdds   Decimal?    @db.Decimal(6, 3)
+  layOdds    Decimal?    @db.Decimal(6, 3)
+  commission Decimal?    @db.Decimal(5, 2)
+  snr        Boolean     @default(false)
+  outcome    BetOutcome?
+
+  // Realized values — set once settled. For exchange bets these are computed
+  // from the calculator inputs + outcome; for single-leg bets they're manual.
+  bookmakerProfit Decimal? @db.Decimal(10, 2)
+  exchangeProfit  Decimal? @db.Decimal(10, 2)
+
+  // Stake for single-leg bets (no exchangeAccountId) — lets exposure be
+  // tracked while Pending, same as backStake does for back/lay bets.
+  stake Decimal? @db.Decimal(10, 2)
+
+  status    BetStatus @default(PENDING)
+  source    BetSource @default(MANUAL)
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user            AuthUser?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account         Account       @relation("BetAccount", fields: [accountId], references: [id])
+  exchangeAccount Account?      @relation("BetExchangeAccount", fields: [exchangeAccountId], references: [id])
+  betType         BetType       @relation(fields: [betTypeId], references: [id])
+  transactions    Transaction[]
+
+  @@map("bets")
+  @@index([accountId])
+  @@index([betTypeId])
+  @@index([eventDate])
+  @@index([userId])
+}
+
+model CasinoOfferType {
+  id        String        @id @default(cuid())
+  userId    String?
+  name      String
+  createdAt DateTime      @default(now())
+  user      AuthUser?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  offers    CasinoOffer[]
+
+  @@unique([userId, name])
+  @@map("casino_offer_types")
+}
+
+enum CasinoOfferStatus {
+  COMPLETED
+  IN_PROGRESS
+  FORFEITED
+}
+
+model CasinoOffer {
+  id          String            @id @default(cuid())
+  userId      String?
+  accountId   String
+  offerTypeId String
+  title       String
+  offerDate   DateTime
+  profit      Decimal           @db.Decimal(10, 2)
+  status      CasinoOfferStatus @default(COMPLETED)
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user      AuthUser?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account         @relation(fields: [accountId], references: [id])
+  offerType CasinoOfferType @relation(fields: [offerTypeId], references: [id])
+
+  @@map("casino_offers")
+  @@index([accountId])
+  @@index([offerTypeId])
+  @@index([offerDate])
+  @@index([userId])
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  ADJUSTMENT
+  BET_SETTLEMENT
+}
+
+model Transaction {
+  id        String          @id @default(cuid())
+  userId    String?
+  accountId String
+  betId     String?
+  type      TransactionType
+  amount    Decimal         @db.Decimal(10, 2)
+  date      DateTime
+  notes     String?
+  createdAt DateTime        @default(now())
+
+  user    AuthUser? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account Account   @relation(fields: [accountId], references: [id])
+  bet     Bet?      @relation(fields: [betId], references: [id], onDelete: Cascade)
+
+  @@map("transactions")
+  @@index([accountId])
+  @@index([date])
+  @@index([betId])
+  @@index([userId])
+}
+
+model AuthUser {
+  id            String        @id
+  name          String
+  email         String
+  emailVerified Boolean       @default(false)
+  image         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  authsessions  AuthSession[]
+  authaccounts  AuthAccount[]
+
+  people            Person[]
+  bookmakers        Bookmaker[]
+  bookmakerAccounts Account[]
+  betTypes          BetType[]
+  bets              Bet[]
+  casinoOfferTypes  CasinoOfferType[]
+  casinoOffers      CasinoOffer[]
+  transactions      Transaction[]
+
+  @@unique([email])
+  @@map("AuthUser")
+}
+
+model AuthSession {
+  id        String   @id
+  expiresAt DateTime
+  token     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  authuser  AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([userId])
+  @@map("AuthSession")
+}
+
+model AuthAccount {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  authuser              AuthUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("AuthAccount")
+}
+
+model AuthVerification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("AuthVerification")
+}

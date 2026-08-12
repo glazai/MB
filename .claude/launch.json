@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mb-dev",
+      "runtimeExecutable": "C:\\Users\\jojol\\Desktop\\MB\\dev-with-path.cmd",
+      "runtimeArgs": [],
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}
