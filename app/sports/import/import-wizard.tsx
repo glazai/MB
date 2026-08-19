@@ -72,6 +72,7 @@ export function ImportWizard({
   const [betTypeResolutions, setBetTypeResolutions] = useState<Record<string, string>>({});
   const [personResolutions, setPersonResolutions] = useState<Record<string, string>>({});
   const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -199,27 +200,55 @@ export function ImportWizard({
     [validRows, existingPeopleNames],
   );
 
+  // Server Actions cap request payloads at 1MB by default — a large file
+  // (tens of thousands of rows) can exceed that in a single call. Sending it
+  // in chunks removes that ceiling entirely and lets progress be shown.
+  const IMPORT_CHUNK_SIZE = 1000;
+
   async function handleImport() {
     setIsImporting(true);
     setImportError(null);
+
+    const payload: ImportRowPayload[] = validRows.map((r) => ({
+      eventDateISO: r.eventDate!.toISOString(),
+      personName: r.person,
+      bookmakerName: r.bookmaker,
+      betTypeName: r.betType,
+      event: r.event,
+      profit: r.profit,
+      notes: r.notes,
+    }));
+
+    const chunks: ImportRowPayload[][] = [];
+    for (let i = 0; i < payload.length; i += IMPORT_CHUNK_SIZE) {
+      chunks.push(payload.slice(i, i + IMPORT_CHUNK_SIZE));
+    }
+
+    const combined: ImportResult = { created: 0, newPeople: [], newBookmakers: [], newBetTypes: [] };
+    setImportProgress({ done: 0, total: payload.length });
+
     try {
-      const payload: ImportRowPayload[] = validRows.map((r) => ({
-        eventDateISO: r.eventDate!.toISOString(),
-        personName: r.person,
-        bookmakerName: r.bookmaker,
-        betTypeName: r.betType,
-        event: r.event,
-        profit: r.profit,
-        notes: r.notes,
-      }));
-      const res = await importBets(payload);
-      setResult(res);
+      for (const chunk of chunks) {
+        const res = await importBets(chunk);
+        combined.created += res.created;
+        combined.newPeople.push(...res.newPeople);
+        combined.newBookmakers.push(...res.newBookmakers);
+        combined.newBetTypes.push(...res.newBetTypes);
+        setImportProgress((prev) => (prev ? { done: prev.done + chunk.length, total: prev.total } : prev));
+      }
+      setResult(combined);
       setStep("result");
-      toast.success(`Imported ${res.created} bets`);
+      toast.success(`Imported ${combined.created} bets`);
     } catch (err) {
+      if (combined.created > 0) {
+        setResult(combined);
+        setStep("result");
+        toast.warning(`Imported ${combined.created} bets before hitting an error — see below`);
+      }
       setImportError(err instanceof Error ? err.message : "Something went wrong importing that file.");
     } finally {
       setIsImporting(false);
+      setImportProgress(null);
     }
   }
 
@@ -523,6 +552,20 @@ export function ImportWizard({
         </div>
 
         {importError && <p className="text-sm text-destructive">{importError}</p>}
+
+        {importProgress && (
+          <div className="space-y-1.5">
+            <div className="h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${Math.round((importProgress.done / importProgress.total) * 100)}%` }}
+              />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Imported {importProgress.done} of {importProgress.total}…
+            </p>
+          </div>
+        )}
 
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setStep("resolve")} disabled={isImporting}>

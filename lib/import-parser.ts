@@ -27,7 +27,7 @@ export type TargetField = (typeof TARGET_FIELDS)[number];
 
 const FIELD_HINTS: Record<TargetField, string[]> = {
   eventDate: ["eventtime", "event date", "eventdate", "date", "event time"],
-  bookmaker: ["bookmaker", "book", "site", "source book"],
+  bookmaker: ["bookmaker", "bookie", "book", "site", "source book"],
   betType: ["bettype", "bet type", "type", "offer"],
   event: ["event", "outcome", "description", "details", "selection"],
   profit: ["profit", "actualprofit", "net", "p/l", "pl"],
