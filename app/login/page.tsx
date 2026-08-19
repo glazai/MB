@@ -62,7 +62,12 @@ export default function LoginPage() {
                 <FieldError errors={[errors.email]} />
               </Field>
               <Field>
-                <FieldLabel htmlFor="password">Password</FieldLabel>
+                <div className="flex items-center justify-between">
+                  <FieldLabel htmlFor="password">Password</FieldLabel>
+                  <Link href="/forgot-password" className="text-sm text-muted-foreground hover:text-foreground">
+                    Forgot password?
+                  </Link>
+                </div>
                 <Input id="password" type="password" autoComplete="current-password" {...register("password")} />
                 <FieldError errors={[errors.password]} />
               </Field>

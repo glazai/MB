@@ -22,7 +22,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { authClient } from "@/lib/auth-client";
 
-const AUTH_PATHS = ["/login", "/signup"];
+const NO_NAV_PATHS = ["/", "/login", "/signup", "/forgot-password", "/reset-password"];
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -48,7 +48,7 @@ export function Nav() {
     router.push("/login");
   }
 
-  if (pathname && AUTH_PATHS.includes(pathname)) {
+  if (pathname && NO_NAV_PATHS.includes(pathname)) {
     return null;
   }
 
