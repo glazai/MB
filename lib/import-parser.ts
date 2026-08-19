@@ -77,19 +77,28 @@ export function parseImportDate(value: string | Date | undefined): Date | null {
   const iso = ISO_DATE.exec(trimmed);
   if (iso) {
     const [, y, m, d, h, min, s] = iso;
-    const date = new Date(Number(y), Number(m) - 1, Number(d), Number(h ?? 0), Number(min ?? 0), Number(s ?? 0));
-    return Number.isNaN(date.getTime()) ? null : date;
+    return buildDate(Number(y), Number(m), Number(d), Number(h ?? 0), Number(min ?? 0), Number(s ?? 0));
   }
 
   const dmy = MONTH_DAY_YEAR.exec(trimmed);
   if (dmy) {
     const [, day, month, year, h, min, s] = dmy;
-    const date = new Date(Number(year), Number(month) - 1, Number(day), Number(h ?? 0), Number(min ?? 0), Number(s ?? 0));
-    return Number.isNaN(date.getTime()) ? null : date;
+    return buildDate(Number(year), Number(month), Number(day), Number(h ?? 0), Number(min ?? 0), Number(s ?? 0));
   }
 
   const fallback = new Date(trimmed);
   return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+// new Date(y, m, d, h, min, s) silently rolls invalid components over into
+// the next unit (e.g. seconds: 79 becomes +1 minute, 19 seconds) instead of
+// rejecting them — some exports (seen from OddsMonkey) contain out-of-range
+// seconds. Treat those as unparseable rather than silently shifting the
+// date/time.
+function buildDate(year: number, month: number, day: number, h: number, min: number, s: number): Date | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || h > 23 || min > 59 || s > 59) return null;
+  const date = new Date(year, month - 1, day, h, min, s);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export function parseImportNumber(value: string | undefined): number | null {

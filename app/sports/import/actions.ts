@@ -1,9 +1,9 @@
 "use server";
 
+import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireUserId } from "@/lib/auth";
-import { syncBetTransactions } from "@/lib/bet-settlement";
 
 export type ImportRowPayload = {
   eventDateISO: string;
@@ -22,53 +22,62 @@ export type ImportResult = {
   newBetTypes: string[];
 };
 
-async function resolveNames(
+// Resolves a list of raw names to ids, batch-creating whatever doesn't
+// already exist. Large imports (hundreds+ rows) previously created each
+// missing name one at a time in a loop — with a serverless function time
+// limit, a big file (1000+ rows, each needing several sequential DB
+// round-trips) could exceed it and fail outright. Batching keeps the total
+// query count small regardless of row count.
+async function resolveNamesBatch(
   names: string[],
   findExisting: (names: string[]) => Promise<{ id: string; name: string }[]>,
-  createOne: (name: string) => Promise<{ id: string }>,
+  createMany: (names: string[]) => Promise<void>,
 ): Promise<{ map: Map<string, string>; created: string[] }> {
   const distinct = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)));
   const map = new Map<string, string>();
-  const created: string[] = [];
-  if (distinct.length === 0) return { map, created };
+  if (distinct.length === 0) return { map, created: [] };
 
   const existing = await findExisting(distinct);
   const existingByLower = new Map(existing.map((e) => [e.name.toLowerCase(), e.id]));
+  for (const [key, id] of existingByLower) map.set(key, id);
 
+  // Dedupe case-insensitively so two differently-cased variants of the same
+  // name (e.g. "Bet365" and "bet365") don't both get created.
+  const missingByLower = new Map<string, string>();
   for (const name of distinct) {
     const key = name.toLowerCase();
-    const existingId = existingByLower.get(key);
-    if (existingId) {
-      map.set(key, existingId);
-    } else {
-      const row = await createOne(name);
-      map.set(key, row.id);
-      created.push(name);
-    }
+    if (!existingByLower.has(key) && !missingByLower.has(key)) missingByLower.set(key, name);
+  }
+  const missing = Array.from(missingByLower.values());
+
+  if (missing.length > 0) {
+    await createMany(missing);
+    const created = await findExisting(missing);
+    for (const row of created) map.set(row.name.toLowerCase(), row.id);
   }
 
-  return { map, created };
+  return { map, created: missing };
 }
 
 export async function importBets(rows: ImportRowPayload[]): Promise<ImportResult> {
   const userId = await requireUserId();
 
-  const people = await resolveNames(
+  const people = await resolveNamesBatch(
     rows.map((r) => r.personName),
     (names) => prisma.person.findMany({ where: { userId, name: { in: names, mode: "insensitive" } }, select: { id: true, name: true } }),
-    (name) => prisma.person.create({ data: { userId, name }, select: { id: true } }),
+    (names) => prisma.person.createMany({ data: names.map((name) => ({ userId, name })), skipDuplicates: true }).then(() => undefined),
   );
 
-  const bookmakers = await resolveNames(
+  const bookmakers = await resolveNamesBatch(
     rows.map((r) => r.bookmakerName),
     (names) => prisma.bookmaker.findMany({ where: { userId, name: { in: names, mode: "insensitive" } }, select: { id: true, name: true } }),
-    (name) => prisma.bookmaker.create({ data: { userId, name }, select: { id: true } }),
+    (names) => prisma.bookmaker.createMany({ data: names.map((name) => ({ userId, name })), skipDuplicates: true }).then(() => undefined),
   );
 
-  const betTypes = await resolveNames(
+  const betTypes = await resolveNamesBatch(
     rows.map((r) => r.betTypeName),
     (names) => prisma.betType.findMany({ where: { userId, name: { in: names, mode: "insensitive" } }, select: { id: true, name: true } }),
-    (name) => prisma.betType.create({ data: { userId, name }, select: { id: true } }),
+    (names) => prisma.betType.createMany({ data: names.map((name) => ({ userId, name })), skipDuplicates: true }).then(() => undefined),
   );
 
   const accountKeys = new Set<string>();
@@ -88,14 +97,29 @@ export async function importBets(rows: ImportRowPayload[]): Promise<ImportResult
     for (const acc of existingAccounts) accountMap.set(`${acc.personId}:${acc.bookmakerId}`, acc.id);
   }
 
-  for (const key of accountKeys) {
-    if (accountMap.has(key)) continue;
-    const [personId, bookmakerId] = key.split(":");
-    const createdAccount = await prisma.account.create({ data: { userId, personId, bookmakerId }, select: { id: true } });
-    accountMap.set(key, createdAccount.id);
+  const newAccounts = Array.from(accountKeys)
+    .filter((key) => !accountMap.has(key))
+    .map((key) => {
+      const [personId, bookmakerId] = key.split(":");
+      const id = randomUUID();
+      accountMap.set(key, id);
+      return { id, userId, personId, bookmakerId };
+    });
+  if (newAccounts.length > 0) {
+    await prisma.account.createMany({ data: newAccounts });
   }
 
-  let createdCount = 0;
+  type BetRow = {
+    id: string;
+    accountId: string;
+    betTypeId: string;
+    event: string;
+    eventDate: Date;
+    profit: number | null;
+    notes: string | null;
+  };
+
+  const betRows: BetRow[] = [];
   for (const row of rows) {
     const personId = people.map.get(row.personName.trim().toLowerCase());
     const bookmakerId = bookmakers.map.get(row.bookmakerName.trim().toLowerCase());
@@ -108,24 +132,52 @@ export async function importBets(rows: ImportRowPayload[]): Promise<ImportResult
     const eventDate = new Date(row.eventDateISO);
     if (Number.isNaN(eventDate.getTime())) continue;
 
-    const bet = await prisma.bet.create({
-      data: {
+    betRows.push({
+      id: randomUUID(),
+      accountId,
+      betTypeId,
+      event: row.event,
+      eventDate,
+      profit: row.profit,
+      notes: row.notes,
+    });
+  }
+
+  if (betRows.length > 0) {
+    await prisma.bet.createMany({
+      data: betRows.map((b) => ({
+        id: b.id,
         userId,
-        accountId,
-        betTypeId,
-        event: row.event,
-        eventDate,
-        bookmakerProfit: row.profit,
-        status: row.profit !== null ? "SETTLED" : "PENDING",
-        notes: row.notes,
+        accountId: b.accountId,
+        betTypeId: b.betTypeId,
+        event: b.event,
+        eventDate: b.eventDate,
+        bookmakerProfit: b.profit,
+        status: b.profit !== null ? "SETTLED" : "PENDING",
+        notes: b.notes,
         source: "MANUAL",
         // Backdate updatedAt to the event date so a bulk historical import
         // doesn't flood the Sports page's "settled today" view.
-        updatedAt: eventDate,
-      },
+        updatedAt: b.eventDate,
+      })),
     });
-    await syncBetTransactions(userId, bet.id);
-    createdCount += 1;
+
+    const settlementTransactions = betRows
+      .filter((b): b is BetRow & { profit: number } => b.profit !== null)
+      .map((b) => ({
+        id: randomUUID(),
+        userId,
+        accountId: b.accountId,
+        betId: b.id,
+        type: "BET_SETTLEMENT" as const,
+        amount: b.profit,
+        date: b.eventDate,
+        notes: `Bet: ${b.event}`,
+      }));
+
+    if (settlementTransactions.length > 0) {
+      await prisma.transaction.createMany({ data: settlementTransactions });
+    }
   }
 
   revalidatePath("/sports");
@@ -135,7 +187,7 @@ export async function importBets(rows: ImportRowPayload[]): Promise<ImportResult
   revalidatePath("/reports");
 
   return {
-    created: createdCount,
+    created: betRows.length,
     newPeople: people.created,
     newBookmakers: bookmakers.created,
     newBetTypes: betTypes.created,
